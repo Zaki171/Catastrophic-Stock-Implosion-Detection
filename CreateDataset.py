@@ -33,7 +33,8 @@ from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder, CrossValidatorModel
 from pyspark.sql.window import Window
-
+from datetime import datetime
+import os
 
 def get_fund_data(imp_df):
     imp_df.createOrReplaceTempView("temp_table")
@@ -105,21 +106,42 @@ def get_feature_col_names():
 
 
 def get_full_series_stocks(imp_df_price):
-    price_data = get_fund_data(spark.createDataFrame(imp_df_price))
+    if os.path.exists('stocks_with_data_since_2001.csv'):
+        print("File found")
+        fsym_ids_2001 = []
+        with open('stocks_with_data_since_2001.csv', mode='r') as file:
+            reader = csv.reader(file)
+            for row in reader:
+                fsym_ids_2001.append(row)
+        fsym_ids_2001 = fsym_ids_2001[0]
+
+    else:
+        
+        price_data = get_fund_data(spark.createDataFrame(imp_df_price))
+
+        window_spec = Window.partitionBy('fsym_id').orderBy(col('p_date'))
+
+        price_data = price_data.withColumn('row_num', F.row_number().over(window_spec))
+
+        price_data = price_data.filter(col('row_num') == 1)
+
+        start_dates = price_data.groupBy('year').count().orderBy('year')
+        df_2001 = price_data.filter(col('year') == 2001) #get the stocks that have data dating back to 2001
+        fsym_ids_2001 = [df_2001.select('fsym_id').distinct().rdd.flatMap(lambda x: x).collect()]
+
+        csv_file_path = "stocks_with_data_since_2001.csv"
+        with open(csv_file_path, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            for row in fsym_ids_2001:
+                writer.writerow(row)
+        fsym_ids_2001 = fsym_ids_2001[0]
+        
     
-    window_spec = Window.partitionBy('fsym_id').orderBy(col('p_date'))
-
-    price_data = price_data.withColumn('row_num', F.row_number().over(window_spec))
-
-    price_data = price_data.filter(col('row_num') == 1)
-
-    start_dates = price_data.groupBy('year').count().orderBy('year')
-    df_2001 = price_data.filter(col('year') == 2001) #get the stocks that have data dating back to 2001
-    fsym_ids_2001 = df_2001.select('fsym_id').distinct().rdd.flatMap(lambda x: x).collect()
     return fsym_ids_2001
 
 
 def get_features_all_stocks_seq(df):
+    orig_df = spark.createDataFrame(df)
     table = "FF_ADVANCED_DER_AF"
     def generate_dates():
         start_date = datetime(2001, 1, 1)
@@ -128,41 +150,39 @@ def get_features_all_stocks_seq(df):
 
         while current_date <= end_date:
             yield current_date
-            current_date += pd.DateOffset(years=1)
+            current_date += pd.DateOffset(years=1) #generating placeholder dates
     
     df['date_for_year'] = df['fsym_id'].map({k: list(generate_dates()) for k, g in df.groupby('fsym_id')})
     df=df.explode('date_for_year')
+    df['date_for_year']= pd.to_datetime(df['date_for_year'])
+    df['year'] = df['date_for_year'].dt.year
     
     
     spark_df = spark.createDataFrame(df)
     spark_df.createOrReplaceTempView("temp_table")
     col_names = get_feature_col_names()
     col_string = ', '.join('a.' + item for item in col_names)
-    q=f"""SELECT t.fsym_id, t.date_for_year, a.date, {col_string}
+    q=f"""SELECT t.fsym_id, t.year, a.date, {col_string}, b.ff_sales
                 FROM temp_table t
-                LEFT JOIN {table} a ON t.fsym_id = a.fsym_id AND YEAR(t.date_for_year) = YEAR(a.date)
-                ORDER BY t.fsym_id, a.date"""
+                LEFT JOIN {table} a ON t.fsym_id = a.fsym_id AND t.year = YEAR(a.date)
+                LEFT JOIN FF_BASIC_AF b ON b.fsym_id = t.fsym_id and t.year = YEAR(b.date)
+                ORDER BY t.fsym_id, t.year"""
     features_df = spark.sql(q)
-    feature_cols = [col for col in features_df.columns if col not in ['fsym_id', 'date']]
+    feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date', 'year']]
     sequences = []
-    print(features_df.take(3))
-    
-    features_df = features_df.withColumn("year", F.year(F.col("date")))
 
     # Group by year and count nulls for each specified column
-    null_counts_per_year = features_df.groupBy("year").agg(
-        *[F.sum(F.when(F.col(col).isNull(), 1).otherwise(0)).alias(f"{col}_null_count") for col in feature_cols]
-    )
-    null_counts_per_year.show(100)
+#     features_df.orderBy('fsym_id','year').show(200)
+#     null_counts_per_year = features_df.groupBy("year").agg(
+#         *[F.sum(F.when(F.col(column).isNull(), 1).otherwise(0)).alias(f"{column}_null_count") for column in feature_cols]
+#     )
+#     null_counts_per_year.orderBy('year').show(100)
     
 
-    grouped_df = features_df.groupBy("fsym_id").agg(
-        *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
+#     grouped_df = features_df.groupBy("fsym_id").agg(
+#         *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
     
     #How to fill gaps?
-    conditions = reduce(lambda x, y: x & y, [F.size(F.col(col)) > 15 for col in feature_cols])
-    row_count_23_values = grouped_df.filter(conditions).count()
-    print("Number with 23 for all: ", row_count_23_values)
 #     row_count_23_values = grouped_df.filter(
 #         *[F.size(F.col(col)) == 23 for col in feature_cols]
 #         ).count()
@@ -185,20 +205,45 @@ def get_features_all_stocks_seq(df):
 #             .collect()
 #         )
 
-    # Print or use the length and frequency information
-    for col_name, info in length_freq_info.items():
-        print(f"Column: {col_name}")
-        for row in info:
-            print(f"Length: {row['length']}, Frequency: {row['count']}")
-        print("\n")
+#     # Print or use the length and frequency information
+#     for col_name, info in length_freq_info.items():
+#         print(f"Column: {col_name}")
+#         for row in info:
+#             print(f"Length: {row['length']}, Frequency: {row['count']}")
+#         print("\n")
     
-    grouped_df_padded = grouped_df.select("fsym_id",
-        *[F.expr(f"IF(size({col}) < 23, concat({col}, array_repeat(0, 23 - size({col}))), {col})").alias(col) for col 
-          in feature_cols]) 
+    #PADDING WITH 0s
+    # grouped_df_padded = grouped_df.select("fsym_id",
+    #     *[F.expr(f"IF(size({col}) < 23, concat({col}, array_repeat(0, 23 - size({col}))), {col})").alias(col) for col 
+    #       in feature_cols])
+    window_spec = Window.partitionBy('fsym_id').orderBy('year')
+    for c in feature_cols:
+        features_df = features_df.withColumn(
+            c, F.last(c, ignorenulls=True).over(window_spec)
+        )
+        
+    # features_df.orderBy('fsym_id','year').show(200)
+    # null_counts_per_year = features_df.groupBy("year").agg(
+    #     *[F.sum(F.when(F.col(column).isNull(), 1).otherwise(0)).alias(f"{column}_null_count") for column in feature_cols]
+    # )
+    # null_counts_per_year.orderBy('year').show(100)
+    # features_df.orderBy('year', 'fsym_id').show(100)
+    #SCALING
+    window_spec2 = Window.partitionBy('year').orderBy('year')
+    for c in feature_cols:
+        features_df = features_df.withColumn(c, ((F.col(c) - F.mean(F.col(c)).over(window_spec2)) /
+                                            F.stddev(F.col(c)).over(window_spec2)))
 
+    grouped_df = features_df.groupBy("fsym_id").agg(
+        *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
     
-    spark_df = spark_df.withColumn('label', F.when(F.isnan('Implosion_Start_Date'), 0).otherwise(1))
-    joined_df = grouped_df_padded.join(spark_df.select("fsym_id", "label"), "fsym_id", "inner")
+    #PADDING VALUES WITH 0S
+    grouped_df_padded = grouped_df.select("fsym_id",
+        *[F.expr(f"IF(size({col}) < 22, concat({col}, array_repeat(0, 22 - size({col}))), {col})").alias(col) for col 
+          in feature_cols])
+    
+    orig_df = orig_df.withColumn('label', F.when(F.isnan('Implosion_Start_Date'), 0).otherwise(1))
+    joined_df = grouped_df_padded.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
     joined_df=joined_df.orderBy('fsym_id')
 
     
@@ -221,7 +266,19 @@ def get_tabular_dataset():
                 WHERE a.date >= "2001-01-01"
                 ORDER BY t.fsym_id, a.date"""
     features_df = spark.sql(q)
-    return features_df
+  
+    joined_df = features_df.join(spark_df.select("fsym_id", "Implosion_Start_Date"), "fsym_id", "inner")
+    
+    joined_df = joined_df.withColumn('year_date', F.year('date'))
+    joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
+    
+    joined_df = joined_df.withColumn('label', F.when(F.col('year_date') == F.col('year_Implosion_Start_Date'), 1).otherwise(0))
+    
+    joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date')
+    
+    joined_df=joined_df.orderBy('fsym_id', 'date')
+    
+    return joined_df
     
     
     
