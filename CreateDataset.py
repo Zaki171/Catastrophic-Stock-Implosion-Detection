@@ -89,8 +89,6 @@ def get_fund_data(imp_df):
     return adj
 
 
-
-
 def get_feature_col_names():
     csv_file_path = 'features.csv'
     data_list = []
@@ -102,8 +100,29 @@ def get_feature_col_names():
     col_list = data_list[0]
     return col_list
 
+def get_not_null_cols(df, table='FF_ADVANCED_DER_AF'):
+    df=spark.createDataFrame(df)
+    df.createOrReplaceTempView("temp_table")
+    query1 = f"""SELECT t.fsym_id, a.*
+                FROM temp_table t
+                LEFT JOIN {table} a ON t.fsym_id = a.fsym_id
+                ORDER BY t.fsym_id, a.date
+            """
+    #we get all the available dates per stock, so these null values are only within the timeframe available
+    q_df = spark.sql(query1)
+    column_types = q_df.dtypes
 
+    # Collect column names that are not of type float
+    columns_to_drop = [col_name for col_name, col_type in column_types if col_type != 'double']
 
+    # Drop columns that are not of type float
+    q_df = q_df.drop(*columns_to_drop)
+
+    q_df = ps.DataFrame(q_df)
+    null_pcts = q_df.isnull().sum()/len(q_df)
+    cols = null_pcts[null_pcts <= 0.2].index.tolist()
+    return cols
+    
 
 def get_full_series_stocks(imp_df_price):
     if os.path.exists('stocks_with_data_since_2001.csv'):
@@ -162,7 +181,7 @@ def get_features_all_stocks_seq(df):
     spark_df.createOrReplaceTempView("temp_table")
     col_names = get_feature_col_names()
     col_string = ', '.join('a.' + item for item in col_names)
-    q=f"""SELECT t.fsym_id, t.year, a.date, {col_string}, b.ff_sales
+    q=f"""SELECT t.fsym_id, t.year, a.date, {col_string}
                 FROM temp_table t
                 LEFT JOIN {table} a ON t.fsym_id = a.fsym_id AND t.year = YEAR(a.date)
                 LEFT JOIN FF_BASIC_AF b ON b.fsym_id = t.fsym_id and t.year = YEAR(b.date)
@@ -216,6 +235,8 @@ def get_features_all_stocks_seq(df):
     # grouped_df_padded = grouped_df.select("fsym_id",
     #     *[F.expr(f"IF(size({col}) < 23, concat({col}, array_repeat(0, 23 - size({col}))), {col})").alias(col) for col 
     #       in feature_cols])
+    
+    #forward filling
     window_spec = Window.partitionBy('fsym_id').orderBy('year')
     for c in feature_cols:
         features_df = features_df.withColumn(
@@ -228,6 +249,7 @@ def get_features_all_stocks_seq(df):
     # )
     # null_counts_per_year.orderBy('year').show(100)
     # features_df.orderBy('year', 'fsym_id').show(100)
+    
     #SCALING
     window_spec2 = Window.partitionBy('year').orderBy('year')
     for c in feature_cols:
@@ -253,12 +275,18 @@ def get_features_all_stocks_seq(df):
 
 
 
-def get_tabular_dataset():
+def get_tabular_dataset(all_feats=False):
     table = "FF_ADVANCED_DER_AF"
     df = pd.read_csv('imploded_stocks_price.csv', index_col=False)
     spark_df = spark.createDataFrame(df)
     spark_df.createOrReplaceTempView("temp_table")
-    col_names = get_feature_col_names()
+    
+    if all_feats:
+        col_names = get_not_null_cols(df)
+    else:
+        col_names = get_feature_col_names()
+        
+        
     col_string = ', '.join('a.' + item for item in col_names)
     q=f"""SELECT t.fsym_id, a.date, {col_string}
                 FROM temp_table t
