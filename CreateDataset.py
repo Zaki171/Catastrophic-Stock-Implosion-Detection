@@ -186,7 +186,18 @@ def get_features_all_stocks_seq(df):
                 LEFT JOIN {table} a ON t.fsym_id = a.fsym_id AND t.year = YEAR(a.date)
                 LEFT JOIN FF_BASIC_AF b ON b.fsym_id = t.fsym_id and t.year = YEAR(b.date)
                 ORDER BY t.fsym_id, t.year"""
+
+    
     features_df = spark.sql(q)
+    features_df = features_df.withColumn("non_null_2001", F.when((F.col("year") == 2001) & (F.col("date").isNotNull()), 1).otherwise(0))
+    
+    ws = Window.partitionBy("fsym_id")
+
+    features_df = features_df.withColumn("group_non_null_2001", F.sum("non_null_2001").over(ws))
+
+    features_df = features_df.filter((F.col("group_non_null_2001") > 0))
+
+    features_df = features_df.drop("non_null_2001", "group_non_null_2001")
     feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date', 'year']]
     sequences = []
 
