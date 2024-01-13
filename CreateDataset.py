@@ -38,13 +38,21 @@ import os
 def get_fund_data(imp_df):
     imp_df.createOrReplaceTempView("temp_table")
     query = f"""SELECT t.fsym_id, p.p_date AS date, p.p_price AS price , splits.p_split_date,
-    IF(ISNULL(splits.p_split_factor),1,splits.p_split_factor) AS split_factor
+    IF(ISNULL(splits.p_split_factor),1,splits.p_split_factor) AS split_factor, ms.p_com_shs_out
                 FROM temp_table t
                 LEFT JOIN FF_SEC_COVERAGE c ON c.fsym_id = t.fsym_id
                 LEFT JOIN sym_coverage sc ON sc.fsym_id = t.fsym_id
                 INNER JOIN fp_basic_prices p ON p.fsym_id = sc.fsym_regional_id
                 LEFT JOIN fp_basic_splits AS splits ON splits.p_split_date = p.p_date AND p.fsym_id = splits.fsym_id
                 LEFT JOIN fp_basic_dividends AS divs ON divs.p_divs_exdate = p.p_date AND p.fsym_id = divs.fsym_id
+                LEFT JOIN (SELECT sf.fsym_id, mp.price_date, sf.p_com_shs_out, sf.p_date AS shares_hist_date
+                                        FROM fp_basic_shares_hist AS sf
+                                        JOIN (SELECT p2.fsym_id, p2.p_date AS price_date, max(h.p_date) AS max_shares_hist_date
+                                                FROM fp_basic_prices AS p2
+                                                JOIN fp_basic_shares_hist AS h ON h.p_date <= p2.p_date AND p2.fsym_id = h.fsym_id
+                                                GROUP BY p2.fsym_id, p2.p_date)
+                                        mp ON mp.fsym_id = sf.fsym_id AND mp.max_shares_hist_date = sf.p_date)
+                            ms ON ms.fsym_id = p.fsym_id AND ms.price_date = p.p_date
                 WHERE p.p_date >= '2001-01-01'
                 ORDER BY t.fsym_id, p.p_date"""
 
@@ -60,7 +68,7 @@ def get_fund_data(imp_df):
     df_div = df_div.na.replace(dic, subset="weekday")
     df_div = df_div.withColumn('date_adj', F.expr("date_sub(date, weekday)"))
     df = adj.join(df_div, (adj.fsym_id == df_div.fsym_id) & (adj.date == df_div.date_adj), how='left') \
-          .select(adj.fsym_id, adj.date, adj.price, df_div.div, adj.split_factor) \
+          .select(adj.fsym_id, adj.date, adj.price, df_div.div, adj.split_factor, adj.p_com_shs_out) \
           .na.fill(0, subset='div') \
           .orderBy(F.col('fsym_id').asc(), F.col('date').desc())
     window_spec = Window.partitionBy("fsym_id").orderBy(F.desc("date"))
@@ -82,6 +90,7 @@ def get_fund_data(imp_df):
 
     # Price adjusted for splits and dividends
     df = df.withColumn('adj_price', F.col('price_split_adj') * F.col('cum_div'))
+    df = df.withColumn('Market_Value', F.col('adj_price') * F.col('p_com_shs_out'))
     df = df.orderBy('fsym_id','date')
                          
     df = df.withColumn('year', F.year('date'))
@@ -93,8 +102,17 @@ def get_fund_data(imp_df):
     df = df.withColumn('row_num', F.row_number().over(window_spec))
 
     df = df.filter(col('row_num') == 1)
-    df = df.select('fsym_id', 'date', 'adj_price').orderBy('fsym_id','date')
+    df = df.select('fsym_id', 'date', 'adj_price', 'Market_Value').orderBy('fsym_id','date')
     return df
+
+def get_macro_df():
+    macro_df = pd.read_csv('macro.csv')
+    macro_df['Date'] = pd.to_datetime(macro_df['Date'])
+    macro_df['GDP'] = macro_df['GDP'].fillna(method='ffill')
+    latest_dates_index = macro_df.groupby(macro_df['Date'].dt.year)['Date'].idxmax()
+    macro_df = macro_df.loc[latest_dates_index]
+    macro_df['year'] = macro_df['Date'].dt.year
+    return macro_df
 
 
 def get_feature_col_names():
@@ -199,7 +217,14 @@ def get_features_all_stocks_seq(df, all_feats=False):
 
     
     features_df = spark.sql(q)
-    features_df = features_df.withColumn("non_null_2001", F.when((F.col("year") == 2001) & (F.col("date").isNotNull()), 1).otherwise(0))
+    print(features_df.count())
+    macro_df = spark.createDataFrame(get_macro_df())
+    print(features_df.count())
+    features_df = features_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 'year', 'inner')
+    features_df = features_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
+    print(features_df.count())
+    
+    features_df = features_df.withColumn("non_null_2001", F.when((F.col("year") == 2001) & (F.col("date").isNotNull()),1).otherwise(0))
     
     ws = Window.partitionBy("fsym_id")
 
@@ -210,47 +235,6 @@ def get_features_all_stocks_seq(df, all_feats=False):
     features_df = features_df.drop("non_null_2001", "group_non_null_2001")
     feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date', 'year']]
     sequences = []
-
-    # Group by year and count nulls for each specified column
-#     features_df.orderBy('fsym_id','year').show(200)
-#     null_counts_per_year = features_df.groupBy("year").agg(
-#         *[F.sum(F.when(F.col(column).isNull(), 1).otherwise(0)).alias(f"{column}_null_count") for column in feature_cols]
-#     )
-#     null_counts_per_year.orderBy('year').show(100)
-    
-
-#     grouped_df = features_df.groupBy("fsym_id").agg(
-#         *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
-    
-    #How to fill gaps?
-#     row_count_23_values = grouped_df.filter(
-#         *[F.size(F.col(col)) == 23 for col in feature_cols]
-#         ).count()
-
-#     print(f"Number of rows with 23 values in all columns: {row_count_23_values}")
-    
-#     row_count_23_values = grouped_df.filter(
-#         *[F.size(F.col(col)) > 15 for col in feature_cols]
-#         ).count()
-
-#     print(f"Number of rows with more than 15 values in all columns: {row_count_23_values}")
-    
-#     length_freq_info = {}
-#     for col_name in feature_cols:
-#         length_freq_info[col_name] = (
-#             grouped_df.select(F.size(col(col_name)).alias("length"))
-#             .groupBy("length")
-#             .count()
-#             .orderBy("length")
-#             .collect()
-#         )
-
-#     # Print or use the length and frequency information
-#     for col_name, info in length_freq_info.items():
-#         print(f"Column: {col_name}")
-#         for row in info:
-#             print(f"Length: {row['length']}, Frequency: {row['count']}")
-#         print("\n")
     
     #PADDING WITH 0s
     # grouped_df_padded = grouped_df.select("fsym_id",
@@ -271,22 +255,26 @@ def get_features_all_stocks_seq(df, all_feats=False):
     # null_counts_per_year.orderBy('year').show(100)
     # features_df.orderBy('year', 'fsym_id').show(100)
     
-    #SCALING
+    #SCALING- should move
     window_spec2 = Window.partitionBy('year').orderBy('year')
     for c in feature_cols:
         features_df = features_df.withColumn(c, ((F.col(c) - F.mean(F.col(c)).over(window_spec2)) /
                                             F.stddev(F.col(c)).over(window_spec2)))
-
+        
+    features_df = features_df.fillna(0.0)
+    
     grouped_df = features_df.groupBy("fsym_id").agg(
         *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
     
+#     grouped_df.show()
+    
     #PADDING VALUES WITH 0S
-    grouped_df_padded = grouped_df.select("fsym_id",
-        *[F.expr(f"IF(size({col}) < 22, concat({col}, array_repeat(0, 22 - size({col}))), {col})").alias(col) for col 
-          in feature_cols])
+    # grouped_df_padded = grouped_df.select("fsym_id",
+    #     *[F.expr(f"IF(size({col}) < 22, concat({col}, array_repeat(0.0, 22 - size({col}))), {col})").alias(col) for col 
+    #       in feature_cols])
     
     orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
-    joined_df = grouped_df_padded.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
+    joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
     joined_df=joined_df.orderBy('fsym_id')
 
     
@@ -296,9 +284,12 @@ def get_features_all_stocks_seq(df, all_feats=False):
 
 
 
+
 def get_tabular_dataset(all_feats=False, imploded_only=False):
     table = "FF_ADVANCED_DER_AF"
     df = pd.read_csv('imploded_stocks_price.csv', index_col=False)
+    df['Implosion_Start_Date'] = pd.to_datetime(df['Implosion_Start_Date'])
+    df['Implosion_End_Date'] = pd.to_datetime(df['Implosion_End_Date'])
     if imploded_only:
         df = df[df['Implosion_Start_Date'].notnull()]
         
@@ -323,14 +314,42 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
     
     joined_df = joined_df.withColumn('year_date', F.year('date'))
     joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
+    macro_df = spark.createDataFrame(get_macro_df())
+    print(joined_df.count())
+    joined_df = joined_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 
+                               joined_df['year_date'] == macro_df['year'], 'inner')
+    joined_df = joined_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
+    print(joined_df.count())
     
-    joined_df = joined_df.withColumn('label', F.when(F.col('year_date') == F.col('year_Implosion_Start_Date'), 1).otherwise(0))
+    if imploded_only:
+        joined_df = joined_df.withColumn('label', F.when((F.col('year_date') > F.col('year_Implosion_Start_Date')), 
+                                                         2).otherwise(F.when(F.col('year_date')==F.col('year_Implosion_Start_Date'), 1).otherwise(0)))
+        joined_df = joined_df.filter((F.col('label') == 0) | (F.col('label') == 1))
     
-    joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date')
+    else:
+        joined_df = joined_df.withColumn('label', 
+            F.when(
+                (F.col('year_Implosion_Start_Date').isNotNull()) &
+                (F.col('year_date') > F.col('year_Implosion_Start_Date')),
+                2
+            ).otherwise(
+                F.when(
+                    (F.col('year_Implosion_Start_Date').isNotNull()) &
+                    (F.col('year_date') == F.col('year_Implosion_Start_Date')),
+                    1
+                ).otherwise(0)
+            )
+        )
+
+        joined_df = joined_df.filter((F.col('label') == 0) | (F.col('label') == 1))
+    
+    joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date', 'year')
     
     joined_df=joined_df.orderBy('fsym_id', 'date')
     
     return joined_df
+
+
     
     
     
