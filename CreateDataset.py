@@ -53,7 +53,7 @@ def get_fund_data(imp_df):
                                                 GROUP BY p2.fsym_id, p2.p_date)
                                         mp ON mp.fsym_id = sf.fsym_id AND mp.max_shares_hist_date = sf.p_date)
                             ms ON ms.fsym_id = p.fsym_id AND ms.price_date = p.p_date
-                WHERE p.p_date >= '2001-01-01'
+                WHERE p.p_date >= '2000-01-01'
                 ORDER BY t.fsym_id, p.p_date"""
 
     
@@ -149,40 +149,6 @@ def get_not_null_cols(df, table='FF_ADVANCED_DER_AF'):
     return cols
     
 
-def get_full_series_stocks(imp_df_price):
-    if os.path.exists('stocks_with_data_since_2001.csv'):
-        print("File found")
-        fsym_ids_2001 = []
-        with open('stocks_with_data_since_2001.csv', mode='r') as file:
-            reader = csv.reader(file)
-            for row in reader:
-                fsym_ids_2001.append(row)
-        fsym_ids_2001 = fsym_ids_2001[0]
-
-    else:
-        
-        price_data = get_fund_data(spark.createDataFrame(imp_df_price))
-
-        window_spec = Window.partitionBy('fsym_id').orderBy(col('p_date'))
-
-        price_data = price_data.withColumn('row_num', F.row_number().over(window_spec))
-
-        price_data = price_data.filter(col('row_num') == 1)
-
-        start_dates = price_data.groupBy('year').count().orderBy('year')
-        df_2001 = price_data.filter(col('year') == 2001) #get the stocks that have data dating back to 2001
-        fsym_ids_2001 = [df_2001.select('fsym_id').distinct().rdd.flatMap(lambda x: x).collect()]
-
-        csv_file_path = "stocks_with_data_since_2001.csv"
-        with open(csv_file_path, mode='w', newline='') as file:
-            writer = csv.writer(file)
-            for row in fsym_ids_2001:
-                writer.writerow(row)
-        fsym_ids_2001 = fsym_ids_2001[0]
-        
-    
-    return fsym_ids_2001
-
 
 def get_features_all_stocks_seq(df, all_feats=False):
     orig_df = spark.createDataFrame(df)
@@ -231,6 +197,7 @@ def get_features_all_stocks_seq(df, all_feats=False):
     features_df = features_df.withColumn("group_non_null_2001", F.sum("non_null_2001").over(ws))
 
     features_df = features_df.filter((F.col("group_non_null_2001") > 0))
+    print(features_df.count())
 
     features_df = features_df.drop("non_null_2001", "group_non_null_2001")
     feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date', 'year']]
@@ -263,8 +230,9 @@ def get_features_all_stocks_seq(df, all_feats=False):
         
     features_df = features_df.fillna(0.0)
     
-    grouped_df = features_df.groupBy("fsym_id").agg(
-        *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
+    
+#     grouped_df = features_df.groupBy("fsym_id").agg(
+#         *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
     
 #     grouped_df.show()
     
@@ -274,7 +242,7 @@ def get_features_all_stocks_seq(df, all_feats=False):
     #       in feature_cols])
     
     orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
-    joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
+    joined_df = features_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
     joined_df=joined_df.orderBy('fsym_id')
 
     
