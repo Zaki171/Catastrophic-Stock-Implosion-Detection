@@ -91,6 +91,7 @@ def get_fund_data(imp_df):
     # Price adjusted for splits and dividends
     df = df.withColumn('adj_price', F.col('price_split_adj') * F.col('cum_div'))
     df = df.withColumn('Market_Value', F.col('adj_price') * F.col('p_com_shs_out'))
+    df = df.withColumn('weekly_return', F.log(df.adj_price / F.lead(df.adj_price).over(window_spec)))
     df = df.orderBy('fsym_id','date')
                          
     df = df.withColumn('year', F.year('date'))
@@ -102,7 +103,7 @@ def get_fund_data(imp_df):
     df = df.withColumn('row_num', F.row_number().over(window_spec))
 
     df = df.filter(col('row_num') == 1)
-    df = df.select('fsym_id', 'date', 'adj_price', 'Market_Value').orderBy('fsym_id','date')
+    df = df.select('fsym_id', 'date', 'adj_price', 'weekly_return', 'Market_Value').orderBy('fsym_id','date')
     return df
 
 def get_macro_df():
@@ -112,6 +113,7 @@ def get_macro_df():
     latest_dates_index = macro_df.groupby(macro_df['Date'].dt.year)['Date'].idxmax()
     macro_df = macro_df.loc[latest_dates_index]
     macro_df['year'] = macro_df['Date'].dt.year
+    macro_df = macro_df.drop('Date', axis=1)
     return macro_df
 
 
@@ -129,24 +131,24 @@ def get_feature_col_names():
 def get_not_null_cols(df, table='FF_ADVANCED_DER_AF'):
     df=spark.createDataFrame(df)
     df.createOrReplaceTempView("temp_table")
-    query1 = f"""SELECT t.fsym_id, a.*
+    query1 = f"""SELECT t.fsym_id AS fsym_id2, a.*
                 FROM temp_table t
                 LEFT JOIN {table} a ON t.fsym_id = a.fsym_id
+                WHERE a.date > '2000-01-01'
                 ORDER BY t.fsym_id, a.date
             """
     #we get all the available dates per stock, so these null values are only within the timeframe available
     q_df = spark.sql(query1)
+    q_df = q_df.drop('date', 'adjdate', 'fsym_id2', 'fsym_id')
+    num_rows = q_df.count()
     column_types = q_df.dtypes
-
-    null_pcts = [F.sum(F.col(col_name).isNull().count()) / F.count("*") for col_name in q_df.columns]
-
-    columns_to_drop = [col_name for col_name, null_pct in zip(q_df.columns, null_pcts) if null_pct > 0.2]
-
-    q_df = q_df.drop(*columns_to_drop)
-
-    cols = q_df.columns
-
-    return cols
+    good_cols = []
+    selected_columns = [F.col(c) for c, c_type in zip(q_df.columns, column_types) if c_type[1] == 'double']
+    q_df = q_df.select(selected_columns)
+    count_df = q_df.select( [(F.count(F.when(F.isnan(c) | F.col(c).isNull(), c))/num_rows).alias(c) for c in q_df.columns])
+    count_dict = count_df.first().asDict()
+    filtered_keys = [key for key, value in count_dict.items() if value <= 0.25]
+    return filtered_keys
     
 
 
@@ -170,24 +172,25 @@ def get_features_all_stocks_seq(df, all_feats=False):
     
     spark_df = spark.createDataFrame(df)
     spark_df.createOrReplaceTempView("temp_table")
+    macro_df= spark.createDataFrame(get_macro_df())
+    macro_df.createOrReplaceTempView("macro")
     if all_feats:
         col_names = get_not_null_cols(df)
+        col_names += ['GDP', 'Unemployment Rate', 'CPI']
     else:
         col_names = get_feature_col_names()
     col_string = ', '.join('a.' + item for item in col_names)
     q=f"""SELECT t.fsym_id, t.year, a.date, {col_string}
                 FROM temp_table t
-                LEFT JOIN {table} a ON t.fsym_id = a.fsym_id AND t.year = YEAR(a.date)
+                LEFT JOIN (SELECT * FROM {table} c LEFT JOIN macro m ON m.year = YEAR(c.date)) AS a ON t.fsym_id = a.fsym_id AND t.year = YEAR(a.date)
                 LEFT JOIN FF_BASIC_AF b ON b.fsym_id = t.fsym_id and t.year = YEAR(b.date)
                 ORDER BY t.fsym_id, t.year"""
 
     
     features_df = spark.sql(q)
     print(features_df.count())
-    macro_df = spark.createDataFrame(get_macro_df())
-    print(features_df.count())
-    features_df = features_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 'year', 'inner')
-    features_df = features_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
+    # features_df = features_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 'year', 'inner')
+    # features_df = features_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
     print(features_df.count())
     
     features_df = features_df.withColumn("non_null_2001", F.when((F.col("year") == 2001) & (F.col("date").isNotNull()),1).otherwise(0))
@@ -209,11 +212,11 @@ def get_features_all_stocks_seq(df, all_feats=False):
     #       in feature_cols])
     
     #forward filling
-    window_spec = Window.partitionBy('fsym_id').orderBy('year')
-    for c in feature_cols:
-        features_df = features_df.withColumn(
-            c, F.last(c, ignorenulls=True).over(window_spec)
-        )
+    # window_spec = Window.partitionBy('fsym_id').orderBy('year')
+    # for c in feature_cols:
+    #     features_df = features_df.withColumn(
+    #         c, F.last(c, ignorenulls=True).over(window_spec)
+    #     )
         
     # features_df.orderBy('fsym_id','year').show(200)
     # null_counts_per_year = features_df.groupBy("year").agg(
@@ -223,16 +226,19 @@ def get_features_all_stocks_seq(df, all_feats=False):
     # features_df.orderBy('year', 'fsym_id').show(100)
     
     #SCALING- should move
-    window_spec2 = Window.partitionBy('year').orderBy('year')
-    for c in feature_cols:
-        features_df = features_df.withColumn(c, ((F.col(c) - F.mean(F.col(c)).over(window_spec2)) /
-                                            F.stddev(F.col(c)).over(window_spec2)))
+    # window_spec2 = Window.partitionBy('year').orderBy('year')
+    # for c in feature_cols:
+    #     features_df = features_df.withColumn(c, ((F.col(c) - F.mean(F.col(c)).over(window_spec2)) /
+    #                                         F.stddev(F.col(c)).over(window_spec2)))
         
-    features_df = features_df.fillna(0.0)
+    # features_df = features_df.fillna(0.0)
     
     
-#     grouped_df = features_df.groupBy("fsym_id").agg(
-#         *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
+    
+    # grouped_df = features_df.groupBy("fsym_id").agg(
+    #     *[F.collect_list(col).alias(col) for col in feature_cols])
+    grouped_df = features_df.groupBy("fsym_id").agg(
+    *[F.mean(F.col(col)).alias(f"{col}_mean") for col in feature_cols])
     
 #     grouped_df.show()
     
@@ -242,7 +248,7 @@ def get_features_all_stocks_seq(df, all_feats=False):
     #       in feature_cols])
     
     orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
-    joined_df = features_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
+    joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
     joined_df=joined_df.orderBy('fsym_id')
 
     
@@ -266,26 +272,31 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
     
     if all_feats:
         col_names = get_not_null_cols(df)
+        col_names += ['GDP', 'Unemployment Rate', 'CPI']
     else:
         col_names = get_feature_col_names()
         
-        
+    macro_df = spark.createDataFrame(get_macro_df())
+    macro_df.createOrReplaceTempView("macro")
     col_string = ', '.join('a.' + item for item in col_names)
+    print(col_names)
     q=f"""SELECT t.fsym_id, a.date, {col_string}
-                FROM temp_table t
-                LEFT JOIN {table} a ON t.fsym_id = a.fsym_id
-                WHERE a.date >= "2001-01-01"
-                ORDER BY t.fsym_id, a.date"""
+            FROM temp_table t LEFT JOIN (
+                SELECT * FROM {table}
+                LEFT JOIN macro m ON m.year = YEAR({table}.date)
+                WHERE {table}.date >= "2001-01-01"
+            ) a ON t.fsym_id = a.fsym_id
+            ORDER BY t.fsym_id, a.date"""
     features_df = spark.sql(q)
+    features_df.show()
   
     joined_df = features_df.join(spark_df.select("fsym_id", "Implosion_Start_Date"), "fsym_id", "inner")
     
     joined_df = joined_df.withColumn('year_date', F.year('date'))
     joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
-    macro_df = spark.createDataFrame(get_macro_df())
     print(joined_df.count())
-    joined_df = joined_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 
-                               joined_df['year_date'] == macro_df['year'], 'inner')
+    # joined_df = joined_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 
+    #                            joined_df['year_date'] == macro_df['year'], 'inner')
     joined_df = joined_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
     print(joined_df.count())
     
