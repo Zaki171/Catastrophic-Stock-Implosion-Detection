@@ -149,10 +149,9 @@ def get_not_null_cols(df, table='FF_ADVANCED_DER_AF'):
     count_dict = count_df.first().asDict()
     filtered_keys = [key for key, value in count_dict.items() if value <= 0.25]
     return filtered_keys
-    
 
 
-def get_features_all_stocks_seq(df, all_feats=False):
+def get_full_seqs(df, all_feats=False):
     orig_df = spark.createDataFrame(df)
     table = "FF_ADVANCED_DER_AF"
     def generate_dates():
@@ -162,8 +161,9 @@ def get_features_all_stocks_seq(df, all_feats=False):
 
         while current_date <= end_date:
             yield current_date
-            current_date += pd.DateOffset(years=1) #generating placeholder dates
-    
+            current_date += pd.DateOffset(years=1)
+            
+            
     df['date_for_year'] = df['fsym_id'].map({k: list(generate_dates()) for k, g in df.groupby('fsym_id')})
     df=df.explode('date_for_year')
     df['date_for_year']= pd.to_datetime(df['date_for_year'])
@@ -188,10 +188,6 @@ def get_features_all_stocks_seq(df, all_feats=False):
 
     
     features_df = spark.sql(q)
-    print(features_df.count())
-    # features_df = features_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 'year', 'inner')
-    # features_df = features_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
-    print(features_df.count())
     
     features_df = features_df.withColumn("non_null_2001", F.when((F.col("year") == 2001) & (F.col("date").isNotNull()),1).otherwise(0))
     
@@ -200,52 +196,26 @@ def get_features_all_stocks_seq(df, all_feats=False):
     features_df = features_df.withColumn("group_non_null_2001", F.sum("non_null_2001").over(ws))
 
     features_df = features_df.filter((F.col("group_non_null_2001") > 0))
-    print(features_df.count())
 
     features_df = features_df.drop("non_null_2001", "group_non_null_2001")
     feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date', 'year']]
     sequences = []
+    window_spec = Window.partitionBy('fsym_id').orderBy('year')
+    for c in feature_cols:
+        features_df = features_df.withColumn(
+            c, F.last(c, ignorenulls=True).over(window_spec)
+        )
     
-    #PADDING WITH 0s
-    # grouped_df_padded = grouped_df.select("fsym_id",
-    #     *[F.expr(f"IF(size({col}) < 23, concat({col}, array_repeat(0, 23 - size({col}))), {col})").alias(col) for col 
-    #       in feature_cols])
+    ws2 = Window.partitionBy('year')
+    for c in feature_cols:
+        mean_col = F.mean(F.col(c)).over(ws2)
+        stddev_col = F.stddev(F.col(c)).over(ws2)
+        features_df = features_df.withColumn(c, (F.col(c) - mean_col) / stddev_col)
+        # features_df.describe(c).show()
+    features_df = features_df.fillna(0.0)
     
-    #forward filling
-    # window_spec = Window.partitionBy('fsym_id').orderBy('year')
-    # for c in feature_cols:
-    #     features_df = features_df.withColumn(
-    #         c, F.last(c, ignorenulls=True).over(window_spec)
-    #     )
-        
-    # features_df.orderBy('fsym_id','year').show(200)
-    # null_counts_per_year = features_df.groupBy("year").agg(
-    #     *[F.sum(F.when(F.col(column).isNull(), 1).otherwise(0)).alias(f"{column}_null_count") for column in feature_cols]
-    # )
-    # null_counts_per_year.orderBy('year').show(100)
-    # features_df.orderBy('year', 'fsym_id').show(100)
-    
-    #SCALING- should move
-    # window_spec2 = Window.partitionBy('year').orderBy('year')
-    # for c in feature_cols:
-    #     features_df = features_df.withColumn(c, ((F.col(c) - F.mean(F.col(c)).over(window_spec2)) /
-    #                                         F.stddev(F.col(c)).over(window_spec2)))
-        
-    # features_df = features_df.fillna(0.0)
-    
-    
-    
-    # grouped_df = features_df.groupBy("fsym_id").agg(
-    #     *[F.collect_list(col).alias(col) for col in feature_cols])
     grouped_df = features_df.groupBy("fsym_id").agg(
-    *[F.mean(F.col(col)).alias(f"{col}_mean") for col in feature_cols])
-    
-#     grouped_df.show()
-    
-    #PADDING VALUES WITH 0S
-    # grouped_df_padded = grouped_df.select("fsym_id",
-    #     *[F.expr(f"IF(size({col}) < 22, concat({col}, array_repeat(0.0, 22 - size({col}))), {col})").alias(col) for col 
-    #       in feature_cols])
+        *[F.collect_list(col).alias(col) for col in feature_cols])
     
     orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
     joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
@@ -253,8 +223,43 @@ def get_features_all_stocks_seq(df, all_feats=False):
 
     
     return joined_df
+    
 
 
+def get_seq_means(df, all_feats=False):
+    orig_df = spark.createDataFrame(df)
+    table = "FF_ADVANCED_DER_AF"
+    
+    
+    spark_df = spark.createDataFrame(df)
+    spark_df.createOrReplaceTempView("temp_table")
+    macro_df= spark.createDataFrame(get_macro_df())
+    macro_df.createOrReplaceTempView("macro")
+    if all_feats:
+        col_names = get_not_null_cols(df)
+        col_names += ['GDP', 'Unemployment Rate', 'CPI']
+    else:
+        col_names = get_feature_col_names()
+    col_string = ', '.join('a.' + item for item in col_names)
+    q=f"""SELECT t.fsym_id, a.date, {col_string}
+                FROM temp_table t
+                LEFT JOIN (SELECT * FROM {table} c LEFT JOIN macro m ON m.year = YEAR(c.date)) AS a ON t.fsym_id = a.fsym_id
+                ORDER BY t.fsym_id, a.date"""
+
+    
+    features_df = spark.sql(q)
+
+    feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date']]
+    
+    grouped_df = features_df.groupBy("fsym_id").agg(
+    *[F.mean(F.col(col)).alias(col) for col in feature_cols])
+    
+    orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
+    joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
+    joined_df=joined_df.orderBy('fsym_id')
+
+    
+    return joined_df
 
 
 
@@ -281,7 +286,7 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
     col_string = ', '.join('a.' + item for item in col_names)
     print(col_names)
     q=f"""SELECT t.fsym_id, a.date, {col_string}
-            FROM temp_table t LEFT JOIN (
+            FROM temp_table t INNER JOIN (
                 SELECT * FROM {table}
                 LEFT JOIN macro m ON m.year = YEAR({table}.date)
                 WHERE {table}.date >= "2001-01-01"
@@ -328,27 +333,3 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
     
     return joined_df
 
-
-    
-    
-    
-#     feature_cols = [col for col in features_df.columns if col not in ['fsym_id', 'date']]
-#     sequences = []
-    
-
-#     grouped_df = features_df.groupBy("fsym_id").agg(
-#         *[F.collect_list(col).alias(col) for col in feature_cols]) #creating lists per cell
-    
-#     #How to fill gaps?
-    
-#     grouped_df_padded = grouped_df.select("fsym_id",
-#         *[F.expr(f"IF(size({col}) < 23, concat({col}, array_repeat(0, 23 - size({col}))), {col})").alias(col) for col 
-#           in feature_cols]) 
-
-    
-#     spark_df = spark_df.withColumn('label', F.when(F.isnan('Implosion_Start_Date'), 0).otherwise(1))
-#     joined_df = grouped_df_padded.join(spark_df.select("fsym_id", "label"), "fsym_id", "inner")
-#     joined_df=joined_df.orderBy('fsym_id')
-
-    
-#     return joined_df
