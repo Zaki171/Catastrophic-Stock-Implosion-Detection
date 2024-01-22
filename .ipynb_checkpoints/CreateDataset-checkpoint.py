@@ -23,7 +23,7 @@ from sklearn.model_selection import TimeSeriesSplit
 import csv
 from pyspark.sql import functions as F
 from functools import reduce
-from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.feature import VectorAssembler, StringIndexer, OneHotEncoder
 from pyspark.ml import Pipeline
 from pyspark.ml.linalg import Vectors, VectorUDT
 from pyspark.sql.functions import udf
@@ -248,11 +248,26 @@ def get_seq_means(df, all_feats=False):
 
     
     features_df = spark.sql(q)
+    # features_df = features_df.withColumn('factset_industry_desc', F.when(F.col('factset_industry_desc').isNull(), 'no_industry').otherwise(F.col('factset_industry_desc')))
+    
+#     indexer = StringIndexer(inputCol="factset_industry_desc", outputCol="industry_index")
+#     indexed_df = indexer.fit(features_df).transform(features_df)
+
+#     # Step 2: One-Hot Encoding
+#     encoder = OneHotEncoder(inputCol="industry_index", outputCol="industry")
+#     models = encoder.fit(indexed_df)
+#     encoded_df =models.transform(indexed_df)
+#     encoded_df.show()
 
     feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date']]
     
     grouped_df = features_df.groupBy("fsym_id").agg(
     *[F.mean(F.col(col)).alias(col) for col in feature_cols])
+    
+#     ws = Window.partitionBy('fsym_id')
+    # encdoded_df = encoded_df.groupBy('fsym_id').agg(F.first('industry'))
+    # encoded_df.show()
+    # grouped_df = grouped_df.join(encoded_df.select('fsym_id', 'industry'), 'fsym_id', 'inner')
     
     orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
     joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
