@@ -114,6 +114,8 @@ def get_macro_df():
     macro_df = macro_df.loc[latest_dates_index]
     macro_df['year'] = macro_df['Date'].dt.year
     macro_df = macro_df.drop('Date', axis=1)
+    new_columns = {'Unemployment Rate': 'Unemployment_Rate'}
+    macro_df.rename(columns=new_columns, inplace=True)
     return macro_df
 
 
@@ -292,7 +294,7 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
     
     if all_feats:
         col_names = get_not_null_cols(df)
-        col_names += ['GDP', 'Unemployment Rate', 'CPI']
+        col_names += ['GDP', 'Unemployment_Rate', 'CPI']
     else:
         col_names = get_feature_col_names()
         
@@ -308,17 +310,16 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
             ) a ON t.fsym_id = a.fsym_id
             ORDER BY t.fsym_id, a.date"""
     features_df = spark.sql(q)
-    features_df.show()
   
     joined_df = features_df.join(spark_df.select("fsym_id", "Implosion_Start_Date"), "fsym_id", "inner")
     
     joined_df = joined_df.withColumn('year_date', F.year('date'))
     joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
-    print(joined_df.count())
+
     # joined_df = joined_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 
     #                            joined_df['year_date'] == macro_df['year'], 'inner')
-    joined_df = joined_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
-    print(joined_df.count())
+    # joined_df = joined_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
+
     
     if imploded_only:
         joined_df = joined_df.withColumn('label', F.when((F.col('year_date') > F.col('year_Implosion_Start_Date')), 
