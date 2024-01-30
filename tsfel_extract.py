@@ -1,4 +1,5 @@
 import tsfel
+import pandas as pd
 
 def feature_extraction(df):
     df = df.set_index('date')
@@ -17,7 +18,7 @@ def feature_extraction(df):
 
         if not group_df.empty:
             try:
-                X = tsfel.time_series_features_extractor(cfg, group_df.drop('fsym_id', axis=1));
+                X = tsfel.time_series_features_extractor(cfg, group_df.drop('fsym_id', axis=1), verbose=0);
                 result_dfs.append(X)
             except ValueError:
                 continue

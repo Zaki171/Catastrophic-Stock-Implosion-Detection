@@ -149,7 +149,7 @@ def get_not_null_cols(df, table='FF_ADVANCED_DER_AF'):
     q_df = q_df.select(selected_columns)
     count_df = q_df.select( [(F.count(F.when(F.isnan(c) | F.col(c).isNull(), c))/num_rows).alias(c) for c in q_df.columns])
     count_dict = count_df.first().asDict()
-    filtered_keys = [key for key, value in count_dict.items() if value <= 0.25]
+    filtered_keys = [key for key, value in count_dict.items() if value <= 0.2]
     return filtered_keys
 
 
@@ -281,9 +281,9 @@ def get_seq_means(df, all_feats=False):
 
 
 
-def get_tabular_dataset(all_feats=False, imploded_only=False):
+def get_tabular_dataset(filename, all_feats=False, imploded_only=False, prediction=False):
     table = "FF_ADVANCED_DER_AF"
-    df = pd.read_csv('imploded_stocks_price.csv', index_col=False)
+    df = pd.read_csv(filename, index_col=False)
     df['Implosion_Start_Date'] = pd.to_datetime(df['Implosion_Start_Date'])
     df['Implosion_End_Date'] = pd.to_datetime(df['Implosion_End_Date'])
     if imploded_only:
@@ -309,6 +309,23 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
                 WHERE {table}.date >= "2001-01-01"
             ) a ON t.fsym_id = a.fsym_id
             ORDER BY t.fsym_id, a.date"""
+    
+#     q=f"""SELECT t.fsym_id, a.date_2 AS date, {col_string}
+#             FROM temp_table t 
+#             INNER JOIN (
+#                 SELECT 
+#                     {table}.*,  -- Select all columns from {table}
+#                     m.*,        -- Select all columns from macro
+#                     b.*,        -- Select all columns from FF_ADVANCED_AF
+#                     b.fsym_id as ff_fsym_id,
+#                     b.date as date_2
+#                 FROM {table}
+#                 LEFT JOIN macro m ON m.year = YEAR({table}.date)
+#                 LEFT JOIN FF_ADVANCED_AF b ON {table}.date = b.date AND {table}.fsym_id = b.fsym_id
+#                 WHERE {table}.date >= "2001-01-01"
+#             ) a ON t.fsym_id = a.ff_fsym_id
+#             ORDER BY t.fsym_id, a.date_2"""
+    
     features_df = spark.sql(q)
   
     joined_df = features_df.join(spark_df.select("fsym_id", "Implosion_Start_Date"), "fsym_id", "inner")
@@ -346,6 +363,11 @@ def get_tabular_dataset(all_feats=False, imploded_only=False):
     joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date', 'year')
     
     joined_df=joined_df.orderBy('fsym_id', 'date')
+    
+    if prediction:
+        ws = Window.partitionBy('fsym_id').orderBy('date')
+        joined_df = joined_df.withColumn('label', F.lead(F.col('label')).over(ws))
+        joined_df = joined_df.filter(F.col('label').isNotNull())
     
     return joined_df
 
