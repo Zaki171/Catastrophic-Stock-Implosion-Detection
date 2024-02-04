@@ -371,4 +371,96 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
     
     return joined_df
 
+def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, prediction=False):
+    table = "FF_ADVANCED_DER_QF"
+    df = pd.read_csv(filename, index_col=False)
+    df['Implosion_Start_Date'] = pd.to_datetime(df['Implosion_Start_Date'])
+    df['Implosion_End_Date'] = pd.to_datetime(df['Implosion_End_Date'])
+    if imploded_only:
+        df = df[df['Implosion_Start_Date'].notnull()]
+        
+    spark_df = spark.createDataFrame(df)
+    spark_df.createOrReplaceTempView("temp_table")
+    
+    if all_feats:
+        col_names = get_not_null_cols(df, table="FF_ADVANCED_DER_QF")
+        col_names += ['GDP', 'Unemployment_Rate', 'CPI']
+    else:
+        col_names = get_feature_col_names()
+        
+    macro_df = spark.createDataFrame(get_macro_df())
+    macro_df.createOrReplaceTempView("macro")
+    col_string = ', '.join('a.' + item for item in col_names)
+    print(col_names)
+    q=f"""SELECT t.fsym_id, a.date, {col_string}
+            FROM temp_table t INNER JOIN (
+                SELECT * FROM {table}
+                LEFT JOIN macro m ON m.year = YEAR({table}.date)
+                WHERE {table}.date >= "2001-01-01"
+            ) a ON t.fsym_id = a.fsym_id
+            ORDER BY t.fsym_id, a.date"""
+    
+#     q=f"""SELECT t.fsym_id, a.date_2 AS date, {col_string}
+#             FROM temp_table t 
+#             INNER JOIN (
+#                 SELECT 
+#                     {table}.*,  -- Select all columns from {table}
+#                     m.*,        -- Select all columns from macro
+#                     b.*,        -- Select all columns from FF_ADVANCED_AF
+#                     b.fsym_id as ff_fsym_id,
+#                     b.date as date_2
+#                 FROM {table}
+#                 LEFT JOIN macro m ON m.year = YEAR({table}.date)
+#                 LEFT JOIN FF_ADVANCED_AF b ON {table}.date = b.date AND {table}.fsym_id = b.fsym_id
+#                 WHERE {table}.date >= "2001-01-01"
+#             ) a ON t.fsym_id = a.ff_fsym_id
+#             ORDER BY t.fsym_id, a.date_2"""
+    
+    features_df = spark.sql(q)
+  
+    # joined_df = features_df.join(spark_df.select("fsym_id", "Implosion_Start_Date"), "fsym_id", "inner")
+    
+#     joined_df = joined_df.withColumn('year_date', F.year('date'))
+#     joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
+#     joined_df = joined_df.withColumn('year_date', F.year('date'))
+#     joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
+
+#     # joined_df = joined_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 
+#     #                            joined_df['year_date'] == macro_df['year'], 'inner')
+#     # joined_df = joined_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
+
+    
+#     if imploded_only:
+#         joined_df = joined_df.withColumn('label', F.when((F.col('year_date') > F.col('year_Implosion_Start_Date')), 
+#                                                          2).otherwise(F.when(F.col('year_date')==F.col('year_Implosion_Start_Date'), 1).otherwise(0)))
+#         joined_df = joined_df.filter((F.col('label') == 0) | (F.col('label') == 1))
+    
+#     else:
+#         joined_df = joined_df.withColumn('label', 
+#             F.when(
+#                 (F.col('year_Implosion_Start_Date').isNotNull()) &
+#                 (F.col('year_date') > F.col('year_Implosion_Start_Date')),
+#                 2
+#             ).otherwise(
+#                 F.when(
+#                     (F.col('year_Implosion_Start_Date').isNotNull()) &
+#                     (F.col('year_date') == F.col('year_Implosion_Start_Date')),
+#                     1
+#                 ).otherwise(0)
+#             )
+#         )
+
+#         joined_df = joined_df.filter((F.col('label') == 0) | (F.col('label') == 1))
+    
+#     joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date', 'year')
+    
+    joined_df=joined_df.orderBy('fsym_id', 'date')
+    
+#     if prediction:
+#         ws = Window.partitionBy('fsym_id').orderBy('date')
+#         joined_df = joined_df.withColumn('label', F.lead(F.col('label')).over(ws))
+#         joined_df = joined_df.filter(F.col('label').isNotNull())
+    
+    return joined_df
+
 
