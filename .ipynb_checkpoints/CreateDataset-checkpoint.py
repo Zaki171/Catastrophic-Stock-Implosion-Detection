@@ -130,7 +130,7 @@ def get_feature_col_names():
     col_list = data_list[0]
     return col_list
 
-def get_not_null_cols(df, table='FF_ADVANCED_DER_AF'):
+def get_not_null_cols(df, null_thresh, table='FF_ADVANCED_DER_AF'):
     df=spark.createDataFrame(df)
     df.createOrReplaceTempView("temp_table")
     query1 = f"""SELECT t.fsym_id AS fsym_id2, a.*
@@ -149,7 +149,7 @@ def get_not_null_cols(df, table='FF_ADVANCED_DER_AF'):
     q_df = q_df.select(selected_columns)
     count_df = q_df.select( [(F.count(F.when(F.isnan(c) | F.col(c).isNull(), c))/num_rows).alias(c) for c in q_df.columns])
     count_dict = count_df.first().asDict()
-    filtered_keys = [key for key, value in count_dict.items() if value <= 0.2]
+    filtered_keys = [key for key, value in count_dict.items() if value <= null_thresh]
     return filtered_keys
 
 
@@ -281,7 +281,7 @@ def get_seq_means(df, all_feats=False):
 
 
 
-def get_tabular_dataset(filename, all_feats=False, imploded_only=False, prediction=False):
+def get_tabular_dataset(filename, all_feats=False, imploded_only=False, prediction=False, null_thresh=0.2):
     table = "FF_ADVANCED_DER_AF"
     df = pd.read_csv(filename, index_col=False)
     df['Implosion_Start_Date'] = pd.to_datetime(df['Implosion_Start_Date'])
@@ -293,7 +293,7 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
     spark_df.createOrReplaceTempView("temp_table")
     
     if all_feats:
-        col_names = get_not_null_cols(df)
+        col_names = get_not_null_cols(df, null_thresh)
         col_names += ['GDP', 'Unemployment_Rate', 'CPI']
     else:
         col_names = get_feature_col_names()
@@ -306,7 +306,7 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
             FROM temp_table t INNER JOIN (
                 SELECT * FROM {table}
                 LEFT JOIN macro m ON m.year = YEAR({table}.date)
-                WHERE {table}.date >= "2001-01-01"
+                WHERE {table}.date >= "2000-01-01"
             ) a ON t.fsym_id = a.fsym_id
             ORDER BY t.fsym_id, a.date"""
     
@@ -364,14 +364,19 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
     
     joined_df=joined_df.orderBy('fsym_id', 'date')
     
-    if prediction:
-        ws = Window.partitionBy('fsym_id').orderBy('date')
-        joined_df = joined_df.withColumn('label', F.lead(F.col('label')).over(ws))
-        joined_df = joined_df.filter(F.col('label').isNotNull())
+#     if prediction:
+#         ws = Window.partitionBy('fsym_id').orderBy('date')
+#         joined_df = joined_df.withColumn('label', F.lead(F.col('label')).over(ws))
+#         joined_df = joined_df.filter(F.col('label').isNotNull())
     
+#     return joined_df
+    if prediction:
+        ws = Window.partitionBy('fsym_id').orderBy(F.col('date').desc())
+        joined_df = joined_df.withColumn('label', F.lag(F.col('label')).over(ws))
+        joined_df = joined_df.filter(F.col('label').isNotNull())
     return joined_df
 
-def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, prediction=False):
+def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, prediction=False, null_thresh=0.2):
     table = "FF_ADVANCED_DER_QF"
     df = pd.read_csv(filename, index_col=False)
     df['Implosion_Start_Date'] = pd.to_datetime(df['Implosion_Start_Date'])
@@ -383,7 +388,7 @@ def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, predi
     spark_df.createOrReplaceTempView("temp_table")
     
     if all_feats:
-        col_names = get_not_null_cols(df, table="FF_ADVANCED_DER_QF")
+        col_names = get_not_null_cols(df, null_thresh, table="FF_ADVANCED_DER_QF")
         col_names += ['GDP', 'Unemployment_Rate', 'CPI']
     else:
         col_names = get_feature_col_names()
@@ -396,7 +401,7 @@ def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, predi
             FROM temp_table t INNER JOIN (
                 SELECT * FROM {table}
                 LEFT JOIN macro m ON m.year = YEAR({table}.date)
-                WHERE {table}.date >= "2001-01-01"
+                WHERE {table}.date >= "2000-01-01"
             ) a ON t.fsym_id = a.fsym_id
             ORDER BY t.fsym_id, a.date"""
     
@@ -454,13 +459,14 @@ def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, predi
     
 #     joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date', 'year')
     
-    joined_df=joined_df.orderBy('fsym_id', 'date')
+    # joined_df=joined_df.orderBy('fsym_id', 'date')
+    features_df = features_df.orderBy('fsym_id', 'date')
     
 #     if prediction:
 #         ws = Window.partitionBy('fsym_id').orderBy('date')
 #         joined_df = joined_df.withColumn('label', F.lead(F.col('label')).over(ws))
 #         joined_df = joined_df.filter(F.col('label').isNotNull())
     
-    return joined_df
+    return features_df
 
 
