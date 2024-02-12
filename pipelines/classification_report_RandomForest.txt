@@ -1,0 +1,11 @@
+              precision    recall  f1-score   support
+
+           0       0.99      1.00      0.99      6706
+           1       0.57      0.13      0.21        99
+
+    accuracy                           0.99      6805
+   macro avg       0.78      0.56      0.60      6805
+weighted avg       0.98      0.99      0.98      6805
+
+
+Matthews Correlation Coefficient: 0.2678271626339772

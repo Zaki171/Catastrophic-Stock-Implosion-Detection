@@ -3,9 +3,9 @@
            0       0.97      1.00      0.98       866
            1       0.00      0.00      0.00        31
 
-    accuracy                           0.96       897
+    accuracy                           0.97       897
    macro avg       0.48      0.50      0.49       897
-weighted avg       0.93      0.96      0.95       897
+weighted avg       0.93      0.97      0.95       897
 
 
-Matthews Correlation Coefficient: -0.008943868002499977
+Matthews Correlation Coefficient: 0.0

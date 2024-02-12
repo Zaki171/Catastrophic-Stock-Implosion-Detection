@@ -35,6 +35,11 @@ from pyspark.sql.window import Window
 from datetime import datetime
 import os
 
+curr_dir = os.getcwd()
+main_dir = os.path.dirname(curr_dir)
+
+
+
 def get_fund_data(imp_df):
     imp_df.createOrReplaceTempView("temp_table")
     query = f"""SELECT t.fsym_id, p.p_date AS date, p.p_price AS price , splits.p_split_date,
@@ -107,7 +112,7 @@ def get_fund_data(imp_df):
     return df
 
 def get_macro_df():
-    macro_df = pd.read_csv('macro.csv')
+    macro_df = pd.read_csv(f'{main_dir}/data/macro.csv')
     macro_df['Date'] = pd.to_datetime(macro_df['Date'])
     macro_df['GDP'] = macro_df['GDP'].fillna(method='ffill')
     latest_dates_index = macro_df.groupby(macro_df['Date'].dt.year)['Date'].idxmax()
@@ -295,6 +300,7 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
     if all_feats:
         col_names = get_not_null_cols(df, null_thresh)
         col_names += ['GDP', 'Unemployment_Rate', 'CPI']
+        # col_names += get_not_null_cols(df, null_thresh, table='FF_ADVANCED_AF')
     else:
         col_names = get_feature_col_names()
         
@@ -310,21 +316,21 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
             ) a ON t.fsym_id = a.fsym_id
             ORDER BY t.fsym_id, a.date"""
     
-#     q=f"""SELECT t.fsym_id, a.date_2 AS date, {col_string}
-#             FROM temp_table t 
-#             INNER JOIN (
-#                 SELECT 
-#                     {table}.*,  -- Select all columns from {table}
-#                     m.*,        -- Select all columns from macro
-#                     b.*,        -- Select all columns from FF_ADVANCED_AF
-#                     b.fsym_id as ff_fsym_id,
-#                     b.date as date_2
-#                 FROM {table}
-#                 LEFT JOIN macro m ON m.year = YEAR({table}.date)
-#                 LEFT JOIN FF_ADVANCED_AF b ON {table}.date = b.date AND {table}.fsym_id = b.fsym_id
-#                 WHERE {table}.date >= "2001-01-01"
-#             ) a ON t.fsym_id = a.ff_fsym_id
-#             ORDER BY t.fsym_id, a.date_2"""
+    # q=f"""SELECT t.fsym_id, a.date_2 AS date, {col_string}
+    #         FROM temp_table t 
+    #         INNER JOIN (
+    #             SELECT 
+    #                 {table}.*,  -- Select all columns from {table}
+    #                 m.*,        -- Select all columns from macro
+    #                 b.*,        -- Select all columns from FF_ADVANCED_AF
+    #                 b.fsym_id as ff_fsym_id,
+    #                 b.date as date_2
+    #             FROM {table}
+    #             LEFT JOIN macro m ON m.year = YEAR({table}.date)
+    #             LEFT JOIN FF_ADVANCED_AF b ON {table}.date = b.date AND {table}.fsym_id = b.fsym_id
+    #             WHERE {table}.date >= "2000-01-01"
+    #         ) a ON t.fsym_id = a.ff_fsym_id
+    #         ORDER BY t.fsym_id, a.date_2"""
     
     features_df = spark.sql(q)
   
