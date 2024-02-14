@@ -86,7 +86,7 @@ def get_fund_data(imp_df):
     df = df.withColumn("div_split_adj", F.col('div') * F.col('cum_split'))
 
     # Dividend factor
-    df = df.withColumn('div_factor', (F.col('price_split_adj') - F.lag('div_split_adj').over(window_spec))/F.col('price_split_adj'))
+    df = df.withColumn('div_factor', (F.col('price_split_adj') -F.lag('div_split_adj').over(window_spec))/F.col('price_split_adj'))
     df = df.na.fill(1, subset='div_factor') # Set dividend factor of latest date to 1
 
     # Cumulative dividend factor
@@ -94,8 +94,10 @@ def get_fund_data(imp_df):
     df = df.na.fill(1, subset='cum_div') # Set cumulative dividend factor of latest date to 1
 
     # Price adjusted for splits and dividends
+    df = df.withColumn("adj_shs_out", F.col("p_com_shs_out") / F.col("cum_split"))
+    
     df = df.withColumn('adj_price', F.col('price_split_adj') * F.col('cum_div'))
-    df = df.withColumn('Market_Value', F.col('adj_price') * F.col('p_com_shs_out'))
+    df = df.withColumn('Market_Value', F.col('adj_price') * F.col('adj_shs_out'))
     df = df.withColumn('weekly_return', F.log(df.adj_price / F.lead(df.adj_price).over(window_spec)))
     df = df.orderBy('fsym_id','date')
                          
