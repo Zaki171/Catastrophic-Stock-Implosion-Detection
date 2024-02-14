@@ -1,8 +1,1 @@
-newenv
-spark_test.ipynb
-identification2.ipynb
-constituents.csv
-russell_2000.csv
-filtered_russell_tickers.csv
-all_implosions_subplots.png
-all_stocks_prices.csv
+ipynb_checkpoints
