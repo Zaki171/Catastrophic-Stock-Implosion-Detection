@@ -1,0 +1,13 @@
+{
+  
+  "statistical": {
+    "Max": {
+      "complexity": "constant",
+      "description": "Computes the maximum value of the signal.",
+      "function": "tsfel.calc_max",
+      "parameters": "",
+      "n_features": 1,
+      "use": "yes"
+    }
+  }
+}
