@@ -384,6 +384,8 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
         joined_df = joined_df.filter(F.col('label').isNotNull())
     return joined_df
 
+
+
 def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, prediction=False, null_thresh=0.2):
     table = "FF_ADVANCED_DER_QF"
     df = pd.read_csv(filename, index_col=False)
@@ -398,6 +400,7 @@ def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, predi
     if all_feats:
         col_names = get_not_null_cols(df, null_thresh, table="FF_ADVANCED_DER_QF")
         col_names += ['GDP', 'Unemployment_Rate', 'CPI']
+        col_names = get_not_null_cols(df, null_thresh, table="FF_ADVANCED_AF")
     else:
         col_names = get_feature_col_names()
         
@@ -413,21 +416,21 @@ def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, predi
             ) a ON t.fsym_id = a.fsym_id
             ORDER BY t.fsym_id, a.date"""
     
-#     q=f"""SELECT t.fsym_id, a.date_2 AS date, {col_string}
-#             FROM temp_table t 
-#             INNER JOIN (
-#                 SELECT 
-#                     {table}.*,  -- Select all columns from {table}
-#                     m.*,        -- Select all columns from macro
-#                     b.*,        -- Select all columns from FF_ADVANCED_AF
-#                     b.fsym_id as ff_fsym_id,
-#                     b.date as date_2
-#                 FROM {table}
-#                 LEFT JOIN macro m ON m.year = YEAR({table}.date)
-#                 LEFT JOIN FF_ADVANCED_AF b ON {table}.date = b.date AND {table}.fsym_id = b.fsym_id
-#                 WHERE {table}.date >= "2001-01-01"
-#             ) a ON t.fsym_id = a.ff_fsym_id
-#             ORDER BY t.fsym_id, a.date_2"""
+    q=f"""SELECT t.fsym_id, a.date_2 AS date, {col_string}
+            FROM temp_table t 
+            INNER JOIN (
+                SELECT 
+                    {table}.*,  -- Select all columns from {table}
+                    m.*,        -- Select all columns from macro
+                    b.*,        -- Select all columns from FF_ADVANCED_AF
+                    b.fsym_id as ff_fsym_id,
+                    b.date as date_2
+                FROM {table}
+                LEFT JOIN macro m ON m.year = YEAR({table}.date)
+                LEFT JOIN FF_ADVANCED_AF b ON {table}.date = b.date AND {table}.fsym_id = b.fsym_id
+                WHERE {table}.date >= "2000-01-01"
+            ) a ON t.fsym_id = a.ff_fsym_id
+            ORDER BY t.fsym_id, a.date_2"""
     
     features_df = spark.sql(q)
   
