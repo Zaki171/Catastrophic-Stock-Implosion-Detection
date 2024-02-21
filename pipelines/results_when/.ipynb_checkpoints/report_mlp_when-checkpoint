@@ -1,0 +1,11 @@
+              precision    recall  f1-score   support
+
+           0       0.99      0.76      0.86      6779
+           1       0.06      0.75      0.10       127
+
+    accuracy                           0.76      6906
+   macro avg       0.52      0.76      0.48      6906
+weighted avg       0.98      0.76      0.85      6906
+
+MCC: 0.15992929924178523
+Hyperparams: {'learning_rate': 0.0007817282264531573, 'batch_size': 2048, 'num_layers': 5, 'num_neurons': 1024, 'dropout_rate': 0.22339292884825013, 'class_weight_0': 0.436465571376498, 'class_weight_1': 79.91672813771633}
