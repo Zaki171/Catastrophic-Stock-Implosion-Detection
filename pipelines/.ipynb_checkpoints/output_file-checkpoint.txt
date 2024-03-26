@@ -1,4 +1,0 @@
-  File "/home/ztewari/Stock-Implosion-Prediction-FYP/pipelines/tsfel_test.py", line 1
-    %%capture
-    ^
-SyntaxError: invalid syntax
