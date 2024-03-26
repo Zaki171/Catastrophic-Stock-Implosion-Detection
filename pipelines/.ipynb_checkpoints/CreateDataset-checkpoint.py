@@ -191,6 +191,84 @@ def get_fund_data_monthly(imp_df):
     df = df.select('fsym_id', 'date', 'adj_price', 'Market_Value').orderBy('fsym_id', 'date')
     return df
 
+def get_fund_data_yearly(imp_df):
+    imp_df.createOrReplaceTempView("temp_table")
+    query = f"""SELECT t.fsym_id, p.p_date AS date, p.p_price AS price , splits.p_split_date,
+    IF(ISNULL(splits.p_split_factor),1,splits.p_split_factor) AS split_factor, ms.p_com_shs_out
+                FROM temp_table t
+                LEFT JOIN FF_SEC_COVERAGE c ON c.fsym_id = t.fsym_id
+                LEFT JOIN sym_coverage sc ON sc.fsym_id = t.fsym_id
+                INNER JOIN fp_basic_prices p ON p.fsym_id = sc.fsym_regional_id
+                LEFT JOIN fp_basic_splits AS splits ON splits.p_split_date = p.p_date AND p.fsym_id = splits.fsym_id
+                LEFT JOIN fp_basic_dividends AS divs ON divs.p_divs_exdate = p.p_date AND p.fsym_id = divs.fsym_id
+                LEFT JOIN (SELECT sf.fsym_id, mp.price_date, sf.p_com_shs_out, sf.p_date AS shares_hist_date
+                                        FROM fp_basic_shares_hist AS sf
+                                        JOIN (SELECT p2.fsym_id, p2.p_date AS price_date, max(h.p_date) AS max_shares_hist_date
+                                                FROM fp_basic_prices AS p2
+                                                JOIN fp_basic_shares_hist AS h ON h.p_date <= p2.p_date AND p2.fsym_id = h.fsym_id
+                                                GROUP BY p2.fsym_id, p2.p_date)
+                                        mp ON mp.fsym_id = sf.fsym_id AND mp.max_shares_hist_date = sf.p_date)
+                            ms ON ms.fsym_id = p.fsym_id AND ms.price_date = p.p_date
+                WHERE p.p_date >= '2000-01-01'
+                ORDER BY t.fsym_id, p.p_date"""
+
+    
+
+    adj = spark.sql(query)
+    div_query = """SELECT fsym_id, p_divs_exdate AS date, SUM(p_divs_pd) AS div FROM fp_basic_dividends 
+                    GROUP BY fsym_id, p_divs_exdate
+                    ORDER BY fsym_id, p_divs_exdate"""
+    df_div = spark.sql(div_query)
+    df_div = df_div.withColumn('weekday', F.dayofweek('date'))
+    dic = {1:2, 2:0, 3:0, 4:0, 5:0, 6:0, 7:1}
+    df_div = df_div.na.replace(dic, subset="weekday")
+    df_div = df_div.withColumn('date_adj', F.expr("date_sub(date, weekday)"))
+    df = adj.join(df_div, (adj.fsym_id == df_div.fsym_id) & (adj.date == df_div.date_adj), how='left') \
+          .select(adj.fsym_id, adj.date, adj.price, df_div.div, adj.split_factor, adj.p_com_shs_out) \
+          .na.fill(0, subset='div') \
+          .orderBy(F.col('fsym_id').asc(), F.col('date').desc())
+    window_spec = Window.partitionBy("fsym_id").orderBy(F.desc("date"))
+
+    df = df.withColumn("cum_split", F.lag(F.exp(F.sum(F.log("split_factor")).over(window_spec))).over(window_spec))
+    df = df.na.fill(1, subset='cum_split') # Set cumulative split factor of latest date to 1
+
+    # Split-adjusted price and dividends
+    df = df.withColumn("price_split_adj", F.col('price') * F.col('cum_split'))
+    df = df.withColumn("div_split_adj", F.col('div') * F.col('cum_split'))
+
+    # Dividend factor
+    df = df.withColumn('div_factor', (F.col('price_split_adj') -F.lag('div_split_adj').over(window_spec))/F.col('price_split_adj'))
+    df = df.na.fill(1, subset='div_factor') # Set dividend factor of latest date to 1
+
+    # Cumulative dividend factor
+    df = df.withColumn("cum_div", F.exp(F.sum(F.log("div_factor")).over(window_spec)))
+    df = df.na.fill(1, subset='cum_div') # Set cumulative dividend factor of latest date to 1
+
+    # Price adjusted for splits and dividends
+    df = df.withColumn("adj_shs_out", F.col("p_com_shs_out") / F.col("cum_split"))
+    
+    df = df.withColumn('adj_price', F.col('price_split_adj') * F.col('cum_div'))
+    df = df.withColumn('Market_Value', F.col('adj_price') * F.col('adj_shs_out'))
+    df = df.withColumn('weekly_return', F.log(df.adj_price / F.lead(df.adj_price).over(window_spec)))
+    df = df.orderBy('fsym_id','date')
+                         
+    df = df.withColumn('year', F.year('date'))
+
+    # Define the window specification for monthly partitioning
+    window_spec = Window.partitionBy('fsym_id', 'year').orderBy(F.col('date').desc())
+
+    # Assign row numbers within each monthly partition
+    df = df.withColumn('row_num', F.row_number().over(window_spec))
+
+    # Filter to keep only the first row (latest date) within each monthly partition
+    df = df.filter(F.col('row_num') < 5)
+
+    # Select the desired columns and order the result
+    df = df.select('fsym_id', 'date', 'adj_price', 'Market_Value').orderBy('fsym_id', 'date')
+    return df
+
+
+
 def get_macro_df():
     macro_df = pd.read_csv(f'{main_dir}/data/macro.csv')
     macro_df['Date'] = pd.to_datetime(macro_df['Date'])
