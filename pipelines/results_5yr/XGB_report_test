@@ -1,0 +1,11 @@
+              precision    recall  f1-score   support
+
+           0       0.99      1.00      0.99     12523
+           1       0.35      0.17      0.22       114
+
+    accuracy                           0.99     12637
+   macro avg       0.67      0.58      0.61     12637
+weighted avg       0.99      0.99      0.99     12637
+
+MCC: 0.23525724150518654
+Hyperparams: {'colsample_bytree': 0.71, 'eta': 0.05, 'gamma': 6.65, 'max_depth': 449, 'min_child_weight': 49.0, 'n_estimators': 744, 'scale_pos_weight': 44.61222033535857, 'subsample': 0.7000000000000001}
