@@ -1,0 +1,11 @@
+              precision    recall  f1-score   support
+
+           0       1.00      0.98      0.99     12523
+           1       0.15      0.48      0.23       114
+
+    accuracy                           0.97     12637
+   macro avg       0.57      0.73      0.61     12637
+weighted avg       0.99      0.97      0.98     12637
+
+MCC: 0.25839554698432654
+Hyperparams: {'maxBins': 57.0, 'maxDepth': 27.0, 'minInfoGain': 0.0017449813758649562, 'minInstancesPerNode': 1.0}
