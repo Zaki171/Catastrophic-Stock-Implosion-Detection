@@ -1,11 +1,11 @@
               precision    recall  f1-score   support
 
-           0       1.00      0.65      0.79     21838
+           0       1.00      0.66      0.79     21838
            1       0.02      0.83      0.04       175
 
-    accuracy                           0.65     22013
-   macro avg       0.51      0.74      0.41     22013
-weighted avg       0.99      0.65      0.78     22013
+    accuracy                           0.66     22013
+   macro avg       0.51      0.74      0.42     22013
+weighted avg       0.99      0.66      0.79     22013
 
-MCC: 0.0885455204879847
-Hyperparams: {'elasticNetParam': 0.06391612960837145, 'regParam': 0.10687779778014551}
+MCC: 0.09121699722638471
+Hyperparams: {'elasticNetParam': 0.3017876778740024, 'regParam': 0.013781942892626457}
