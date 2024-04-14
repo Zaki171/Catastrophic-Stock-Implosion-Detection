@@ -40,7 +40,7 @@ main_dir = os.path.dirname(curr_dir)
 
 
 
-def get_fund_data(imp_df):
+def get_fund_data(imp_df): #This function is used to get price data for a given dataframe consisting of stock IDs
     imp_df.createOrReplaceTempView("temp_table")
     query = f"""SELECT t.fsym_id, p.p_date AS date, p.p_price AS price , splits.p_split_date,
     IF(ISNULL(splits.p_split_factor),1,splits.p_split_factor) AS split_factor, ms.p_com_shs_out
@@ -64,6 +64,7 @@ def get_fund_data(imp_df):
     
 
     adj = spark.sql(query)
+    ###The following code was provided by Banking Science
     div_query = """SELECT fsym_id, p_divs_exdate AS date, SUM(p_divs_pd) AS div FROM fp_basic_dividends 
                     GROUP BY fsym_id, p_divs_exdate
                     ORDER BY fsym_id, p_divs_exdate"""
@@ -112,7 +113,6 @@ def get_fund_data(imp_df):
     df = df.filter(col('row_num') == 1)
     df = df.select('fsym_id', 'date', 'adj_price', 'Market_Value').orderBy('fsym_id','date')
     return df
-
 
 def get_fund_data_monthly(imp_df):
     imp_df.createOrReplaceTempView("temp_table")
@@ -190,6 +190,9 @@ def get_fund_data_monthly(imp_df):
     # Select the desired columns and order the result
     df = df.select('fsym_id', 'date', 'adj_price', 'Market_Value').orderBy('fsym_id', 'date')
     return df
+
+
+
 
 def get_fund_data_yearly(imp_df):
     imp_df.createOrReplaceTempView("temp_table")
@@ -293,7 +296,7 @@ def get_feature_col_names():
     col_list = data_list[0]
     return col_list
 
-def get_not_null_cols(df, null_thresh, table='FF_ADVANCED_DER_AF'):
+def get_not_null_cols(df, null_thresh, table='FF_ADVANCED_DER_AF'): #This function selects columns that have a proportion of null values < null_thresh
     df=spark.createDataFrame(df)
     df.createOrReplaceTempView("temp_table")
     query1 = f"""SELECT t.fsym_id AS fsym_id2, a.*
@@ -317,78 +320,7 @@ def get_not_null_cols(df, null_thresh, table='FF_ADVANCED_DER_AF'):
     return filtered_keys
 
 
-def get_full_seqs(df, all_feats=False):
-    orig_df = spark.createDataFrame(df)
-    table = "FF_ADVANCED_DER_AF"
-    def generate_dates():
-        start_date = datetime(2001, 1, 1)
-        end_date = datetime(2022, 12, 31)
-        current_date = start_date
 
-        while current_date <= end_date:
-            yield current_date
-            current_date += pd.DateOffset(years=1)
-            
-            
-    df['date_for_year'] = df['fsym_id'].map({k: list(generate_dates()) for k, g in df.groupby('fsym_id')})
-    df=df.explode('date_for_year')
-    df['date_for_year']= pd.to_datetime(df['date_for_year'])
-    df['year'] = df['date_for_year'].dt.year
-    
-    
-    spark_df = spark.createDataFrame(df)
-    spark_df.createOrReplaceTempView("temp_table")
-    macro_df= spark.createDataFrame(get_macro_df())
-    macro_df.createOrReplaceTempView("macro")
-    if all_feats:
-        col_names = get_not_null_cols(df)
-        col_names += ['GDP', 'Unemployment Rate', 'CPI']
-    else:
-        col_names = get_feature_col_names()
-    col_string = ', '.join('a.' + item for item in col_names)
-    q=f"""SELECT t.fsym_id, t.year, a.date, {col_string}
-                FROM temp_table t
-                LEFT JOIN (SELECT * FROM {table} c LEFT JOIN macro m ON m.year = YEAR(c.date)) AS a ON t.fsym_id = a.fsym_id AND t.year = YEAR(a.date)
-                LEFT JOIN FF_BASIC_AF b ON b.fsym_id = t.fsym_id and t.year = YEAR(b.date)
-                ORDER BY t.fsym_id, t.year"""
-
-    
-    features_df = spark.sql(q)
-    
-    features_df = features_df.withColumn("non_null_2001", F.when((F.col("year") == 2001) & (F.col("date").isNotNull()),1).otherwise(0))
-    
-    ws = Window.partitionBy("fsym_id")
-
-    features_df = features_df.withColumn("group_non_null_2001", F.sum("non_null_2001").over(ws))
-
-    features_df = features_df.filter((F.col("group_non_null_2001") > 0))
-
-    features_df = features_df.drop("non_null_2001", "group_non_null_2001")
-    feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date', 'year']]
-    sequences = []
-    window_spec = Window.partitionBy('fsym_id').orderBy('year')
-    for c in feature_cols:
-        features_df = features_df.withColumn(
-            c, F.last(c, ignorenulls=True).over(window_spec)
-        )
-    
-    ws2 = Window.partitionBy('year')
-    for c in feature_cols:
-        mean_col = F.mean(F.col(c)).over(ws2)
-        stddev_col = F.stddev(F.col(c)).over(ws2)
-        features_df = features_df.withColumn(c, (F.col(c) - mean_col) / stddev_col)
-        # features_df.describe(c).show()
-    features_df = features_df.fillna(0.0)
-    
-    grouped_df = features_df.groupBy("fsym_id").agg(
-        *[F.collect_list(col).alias(col) for col in feature_cols])
-    
-    orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
-    joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
-    joined_df=joined_df.orderBy('fsym_id')
-
-    
-    return joined_df
     
 
 
@@ -414,26 +346,13 @@ def get_seq_means(df, all_feats=False):
 
     
     features_df = spark.sql(q)
-    # features_df = features_df.withColumn('factset_industry_desc', F.when(F.col('factset_industry_desc').isNull(), 'no_industry').otherwise(F.col('factset_industry_desc')))
-    
-#     indexer = StringIndexer(inputCol="factset_industry_desc", outputCol="industry_index")
-#     indexed_df = indexer.fit(features_df).transform(features_df)
 
-#     # Step 2: One-Hot Encoding
-#     encoder = OneHotEncoder(inputCol="industry_index", outputCol="industry")
-#     models = encoder.fit(indexed_df)
-#     encoded_df =models.transform(indexed_df)
-#     encoded_df.show()
 
     feature_cols = [column for column in features_df.columns if column not in ['fsym_id', 'date']]
     
     grouped_df = features_df.groupBy("fsym_id").agg(
     *[F.mean(F.col(col)).alias(col) for col in feature_cols])
-    
-#     ws = Window.partitionBy('fsym_id')
-    # encdoded_df = encoded_df.groupBy('fsym_id').agg(F.first('industry'))
-    # encoded_df.show()
-    # grouped_df = grouped_df.join(encoded_df.select('fsym_id', 'industry'), 'fsym_id', 'inner')
+
     
     orig_df = orig_df.withColumn('label', F.when(F.isnull('Implosion_Start_Date'), 0).otherwise(1))
     joined_df = grouped_df.join(orig_df.select("fsym_id", "label"), "fsym_id", "inner")
@@ -443,9 +362,7 @@ def get_seq_means(df, all_feats=False):
     return joined_df
 
 
-
-
-def get_tabular_dataset(filename, all_feats=False, imploded_only=False, prediction=False, null_thresh=0.2):
+def get_tabular_dataset(filename, all_feats=False, imploded_only=False, prediction=False, null_thresh=0.2): #main function for extracting yearly data
     table = "FF_ADVANCED_DER_AF"
     df = pd.read_csv(filename, index_col=False)
     df['Implosion_Start_Date'] = pd.to_datetime(df['Implosion_Start_Date'])
@@ -528,13 +445,7 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
     joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date', 'year')
     
     joined_df=joined_df.orderBy('fsym_id', 'date')
-    
-#     if prediction:
-#         ws = Window.partitionBy('fsym_id').orderBy('date')
-#         joined_df = joined_df.withColumn('label', F.lead(F.col('label')).over(ws))
-#         joined_df = joined_df.filter(F.col('label').isNotNull())
-    
-#     return joined_df
+
     if prediction:
         ws = Window.partitionBy('fsym_id').orderBy(F.col('date').desc())
         joined_df = joined_df.withColumn('label', F.lag(F.col('label')).over(ws))
@@ -543,7 +454,7 @@ def get_tabular_dataset(filename, all_feats=False, imploded_only=False, predicti
 
 
 
-def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, prediction=False, null_thresh=0.2):
+def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, prediction=False, null_thresh=0.2): #function for extracting monthly data
     table = "FF_ADVANCED_DER_QF"
     df = pd.read_csv(filename, index_col=False)
     df['Implosion_Start_Date'] = pd.to_datetime(df['Implosion_Start_Date'])
@@ -614,56 +525,7 @@ def get_tabular_dataset_qf(filename, all_feats=False, imploded_only=False, predi
         )
 
     big_df =big_df.filter((F.col('label') == 0) | (F.col('label') == 1))
-    # print(big_df.show())
-    
-    # backfill_window = Window.partitionBy('fsym_id').orderBy('date')
-    # for col_name in columns_to_backfill:
-    #     big_df = big_df.withColumn(col_name, F.last(col_name, True).over(backfill_window))
-    
-  
-    # joined_df = features_df.join(spark_df.select("fsym_id", "Implosion_Start_Date"), "fsym_id", "inner")
-    
-#     joined_df = joined_df.withColumn('year_date', F.year('date'))
-#     joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
-#     joined_df = joined_df.withColumn('year_date', F.year('date'))
-#     joined_df = joined_df.withColumn('year_Implosion_Start_Date', F.year('Implosion_Start_Date'))
-
-#     # joined_df = joined_df.join(macro_df.select('GDP', 'Unemployment Rate', 'CPI', 'year'), 
-#     #                            joined_df['year_date'] == macro_df['year'], 'inner')
-#     # joined_df = joined_df.withColumnRenamed('Unemployment Rate', 'Unemployment_Rate')
-
-    
-#     if imploded_only:
-#         joined_df = joined_df.withColumn('label', F.when((F.col('year_date') > F.col('year_Implosion_Start_Date')), 
-#                                                          2).otherwise(F.when(F.col('year_date')==F.col('year_Implosion_Start_Date'), 1).otherwise(0)))
-#         joined_df = joined_df.filter((F.col('label') == 0) | (F.col('label') == 1))
-    
-#     else:
-#         joined_df = joined_df.withColumn('label', 
-#             F.when(
-#                 (F.col('year_Implosion_Start_Date').isNotNull()) &
-#                 (F.col('year_date') > F.col('year_Implosion_Start_Date')),
-#                 2
-#             ).otherwise(
-#                 F.when(
-#                     (F.col('year_Implosion_Start_Date').isNotNull()) &
-#                     (F.col('year_date') == F.col('year_Implosion_Start_Date')),
-#                     1
-#                 ).otherwise(0)
-#             )
-#         )
-
-#         joined_df = joined_df.filter((F.col('label') == 0) | (F.col('label') == 1))
-    
-#     joined_df = joined_df.drop('year_date', 'year_Implosion_Start_Date', 'Implosion_Start_Date', 'year')
-    
-    # joined_df=joined_df.orderBy('fsym_id', 'date')
-
-    
-#     if prediction:
-#         ws = Window.partitionBy('fsym_id').orderBy('date')
-#         joined_df = joined_df.withColumn('label', F.lead(F.col('label')).over(ws))
-#         joined_df = joined_df.filter(F.col('label').isNotNull())
+ 
     
     return big_df
 
