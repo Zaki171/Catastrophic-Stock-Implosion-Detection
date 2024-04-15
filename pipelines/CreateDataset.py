@@ -315,7 +315,7 @@ def get_not_null_cols(df, null_thresh, table='FF_ADVANCED_DER_AF'): #This functi
     q_df = q_df.select(selected_columns)
     count_df = q_df.select( [(F.count(F.when(F.isnan(c) | F.col(c).isNull(), c))/num_rows).alias(c) for c in q_df.columns])
     count_dict = count_df.first().asDict()
-    print(count_dict)
+    # print(count_dict)
     filtered_keys = [key for key, value in count_dict.items() if value <= null_thresh]
     return filtered_keys
 
