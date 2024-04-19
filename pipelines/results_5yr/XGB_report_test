@@ -1,11 +1,11 @@
               precision    recall  f1-score   support
 
-           0       1.00      0.98      0.99     12523
-           1       0.19      0.61      0.28       114
+           0       0.99      1.00      0.99     11555
+           1       0.45      0.25      0.32       165
 
-    accuracy                           0.97     12637
-   macro avg       0.59      0.79      0.64     12637
-weighted avg       0.99      0.97      0.98     12637
+    accuracy                           0.99     11720
+   macro avg       0.72      0.62      0.66     11720
+weighted avg       0.98      0.99      0.98     11720
 
-MCC: 0.32550268683052536
-Hyperparams: {'colsample_bytree': 0.73, 'eta': 0.025, 'gamma': 3.5500000000000003, 'max_depth': 33, 'min_child_weight': 45.0, 'n_estimators': 106, 'scale_pos_weight': 280.27947326101463, 'subsample': 0.9500000000000001}
+MCC: 0.3277219434768554
+Hyperparams: {'colsample_bytree': 0.79, 'eta': 0.125, 'gamma': 0.55, 'max_depth': 183, 'min_child_weight': 43.0, 'n_estimators': 184, 'scale_pos_weight': 500.6691613178358, 'subsample': 0.9500000000000001}
