@@ -1,6 +1,8 @@
 # Stock-Implosion-Prediction-FYP
 
-The algorithm for labelling stock implosions for historical data can be found in Implosion_Identification.ipynb.
+The algorithm(s) for labelling stock implosions from historical data can be found in Implosion_Identification.ipynb
+
+The EDA of the dataset can be found ImplosionEDA.ipynb
 
 Approach 1 - 1-year Rolling Window can be found in pipelines/1yearwindowpred.ipynb
 
