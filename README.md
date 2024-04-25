@@ -1,6 +1,6 @@
 # Stock-Implosion-Prediction-FYP
 
-The algorithm(s) for labelling stock implosions from historical data can be found in Implosion_Identification.ipynb
+The final algorithm(s) for labelling stock implosions from historical data can be found in Implosion_Identification.ipynb. Early experimentations can be found in ImplosionMetricsExperiments.ipynb
 
 The EDA of the dataset can be found ImplosionEDA.ipynb
 
